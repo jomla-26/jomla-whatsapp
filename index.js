@@ -10,8 +10,7 @@
 import express from "express";
 import QRCode from "qrcode";
 import pino from "pino";
-import {
-  default: makeWASocket,
+import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
