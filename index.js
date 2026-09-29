@@ -8,6 +8,7 @@
  *   GET  /status  — يوريك حالة الاتصال الحالية
  *   POST /send    — يبعت رسالة واتساب (نص، أو رابط PDF مرفق)، محمي بمفتاح سري
  */
+import fs from "fs";
 import express from "express";
 import QRCode from "qrcode";
 import pino from "pino";
@@ -60,10 +61,24 @@ async function startSocket() {
 
     if (connection === "close") {
       connectionStatus = "disconnected";
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("انقطع الاتصال، إعادة المحاولة:", shouldReconnect);
-      if (shouldReconnect) startSocket();
+      const code = lastDisconnect?.error?.output?.statusCode;
+      const loggedOut = code === DisconnectReason.loggedOut; // 401: الجلسة انتهت أو انفصل الجهاز من الهاتف
+      console.log("انقطع الاتصال، الكود:", code, "— تسجيل خروج:", loggedOut);
+
+      if (loggedOut) {
+        // الجلسة القديمة ما عادت صالحة: نمسحها من الـVolume ونبدأ من جديد عشان يطلع كود QR جديد
+        try {
+          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+          console.log("تم مسح الجلسة القديمة — سيظهر كود QR جديد خلال ثوانٍ");
+        } catch (e) {
+          console.error("تعذّر مسح مجلد الجلسة:", e.message);
+        }
+        latestQr = null;
+        setTimeout(() => startSocket().catch((e) => console.error("فشل إعادة التشغيل:", e)), 2000);
+      } else {
+        // انقطاع عادي (شبكة/إعادة تشغيل من واتساب): نعيد المحاولة بعد ثانيتين
+        setTimeout(() => startSocket().catch((e) => console.error("فشل إعادة الاتصال:", e)), 2000);
+      }
     }
   });
 }
