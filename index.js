@@ -44,6 +44,12 @@ async function startSocket() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // وكيل الردود: كل رسالة نصية خاصة واردة نرسلها للـAPI ونرد بجوابه
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
+    if (type !== "notify") return;
+    for (const m of messages) handleIncoming(m).catch((e) => console.error("[Agent] فشل معالجة رسالة:", e.message));
+  });
+
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -81,6 +87,48 @@ async function startSocket() {
       }
     }
   });
+}
+
+const JOMLA_API_URL = (process.env.JOMLA_API_URL || "").replace(/\/$/, ""); // مثال: https://jomla-api-xxx.up.railway.app
+const AGENT_ENABLED = process.env.AGENT_ENABLED !== "false";
+
+async function handleIncoming(m) {
+  if (!AGENT_ENABLED || !JOMLA_API_URL) return;
+  const jid = m.key?.remoteJid;
+  if (!jid || m.key.fromMe) return;
+  if (jid.endsWith("@g.us") || jid === "status@broadcast" || jid.endsWith("@broadcast")) return; // لا مجموعات ولا حالات
+
+  const text = m.message?.conversation || m.message?.extendedTextMessage?.text;
+  if (!text) return; // نص فقط حاليًا (الصور والصوتيات تتجاهل)
+
+  // الرقم الحقيقي: بعض الحسابات تجي بمعرّف @lid وفيها الرقم في حقل بديل
+  const realJid = jid.endsWith("@lid") ? (m.key.senderPn || m.key.remoteJidAlt || "") : jid;
+  const phone = String(realJid).split("@")[0].replace(/\D/g, "");
+  if (!phone) { console.log("[Agent] رسالة بدون رقم معروف — تجاهل"); return; }
+
+  try { await sock.sendPresenceUpdate("composing", jid); } catch { /* اختياري */ }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  let reply = "صار عندي خلل مؤقت، جرّب مرة ثانية بعد شوية.";
+  try {
+    const r = await fetch(`${JOMLA_API_URL}/api/agent/whatsapp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-secret-key": SECRET_KEY },
+      body: JSON.stringify({ phone, text }),
+      signal: ctrl.signal,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.reply) reply = data.reply;
+    else if (r.status === 503) return; // الوكيل غير مفعّل في الـAPI — نسكت بدل ما نرد بخطأ
+    else console.error("[Agent] رد غير متوقع:", r.status, data.error);
+  } catch (e) {
+    console.error("[Agent] تعذّر الوصول للـAPI:", e.message);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  await sock.sendMessage(jid, { text: reply });
 }
 
 startSocket().catch((err) => {
